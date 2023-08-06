@@ -7,7 +7,7 @@ const { Parser } = require('m3u8-parser');
 const fs = require('fs');
 const async = require('async');
 const dateFormat = require('dateformat');
-const download = require('download');
+const download = require('download-mod');
 const crypto = require('crypto');
 const got = require('got');
 const { Readable } = require('stream');
@@ -617,6 +617,7 @@ class QueueObject {
     this.dir = '';
     this.then = this.catch = null;
     this.retry = 0;
+    this.isad = false;
   }
   async callback(_callback) {
     try {
@@ -695,8 +696,12 @@ class QueueObject {
           await download(uri_ts, that.dir, { filename: filename + ".dl", timeout: httpTimeout, headers: that.headers, agent: proxy_agent }).catch((err) => {
             logger.error(err)
             if (fs.existsSync(filpath_dl)) fs.unlinkSync(filpath_dl);
+            if (err.message.includes("Skipped")) {
+              this.isad = true;
+            }
           });
         }
+        if (this.isad) break;
         if (!fs.existsSync(filpath_dl)) continue;
         if (fs.statSync(filpath_dl).size <= 0) {
           fs.unlinkSync(filpath_dl);
@@ -919,18 +924,24 @@ async function startDownload(object, iidx) {
       }
     };
     qo.catch = function () {
-      if (this.retry < 5) {
-        tsQueues.push(this);
+      if (!this.isad) {
+        if (this.retry < 5) {
+          tsQueues.push(this);
+        }
+        else {
+          globalCond[id] = false;
+          video.success = false;
+
+          logger.info(`URL:${video.url} | ${this.segment.uri} download failed`);
+          video.status = "多次尝试，下载片段失败";
+          mainWindow.webContents.send('task-notify-end', video);
+
+          fs.writeFileSync(globalConfigVideoPath, JSON.stringify(configVideos));
+        }
       }
       else {
-        globalCond[id] = false;
-        video.success = false;
-
-        logger.info(`URL:${video.url} | ${this.segment.uri} download failed`);
-        video.status = "多次尝试，下载片段失败";
-        mainWindow.webContents.send('task-notify-end', video);
-
-        fs.writeFileSync(globalConfigVideoPath, JSON.stringify(configVideos));
+        logger.info('Found AD, no retry');
+        mainWindow.webContents.send('task-notify-update', video);
       }
     }
     tsQueues.push(qo);
